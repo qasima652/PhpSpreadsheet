@@ -1134,8 +1134,24 @@ class Worksheet implements IComparable
         return (string) $cellAddress;
     }
 
+    private function tryDefinedName(string $coordinate): string
+    {
+        // Uppercase coordinate
+        $coordinate = strtoupper($coordinate);
+        // Eliminate leading equal sign
+        $coordinate = self::pregReplace('/^=/', '', $coordinate);
+        $defined = $this->parent->getDefinedName($coordinate, $this);
+        if ($defined !== null) {
+            if ($defined->getWorksheet() === $this && !$defined->isFormula()) {
+                $coordinate = self::pregReplace('/^=/', '', $defined->getValue());
+            }
+        }
+
+        return $coordinate;
+    }
+
     /**
-     * Validate a cell range.
+     * Validate a cell address or cell range.
      *
      * @param AddressRange|array<int>|CellAddress|string $cellRange Coordinate of the cells as a string, eg: 'C5:F12';
      *               or as an array of [$fromColumnIndex, $fromRow, $toColumnIndex, $toRow] (e.g. [3, 5, 6, 12]),
@@ -1143,7 +1159,12 @@ class Worksheet implements IComparable
      */
     protected function validateCellOrCellRange($cellRange): string
     {
-        if (is_object($cellRange) && $cellRange instanceof CellAddress) {
+        if (is_string($cellRange) || is_numeric($cellRange)) {
+            // Convert a single column reference like 'A' to 'A:A'
+            $cellRange = self::pregReplace('/^([A-Z]+)$/', '${1}:${1}', $cellRange);
+            // Convert a single row reference like '1' to '1:1'
+            $cellRange = self::pregReplace('/^(\d+)$/', '${1}:${1}', $cellRange);
+        } elseif (is_object($cellRange) && $cellRange instanceof CellAddress) {
             $cellRange = new CellRange($cellRange, $cellRange);
         }
 
@@ -1162,9 +1183,9 @@ class Worksheet implements IComparable
         if (is_string($cellRange)) {
             [$worksheet, $addressRange] = self::extractSheetTitle($cellRange, true);
 
-            // Convert 'A:C' to 'A1:C1048576'
+            // Convert Column ranges like 'A:C' to 'A1:C1048576'
             $addressRange = self::pregReplace('/^([A-Z]+):([A-Z]+)$/', '${1}1:${2}1048576', $addressRange);
-            // Convert '1:3' to 'A1:XFD3'
+            // Convert Row ranges like '1:3' to 'A1:XFD3'
             $addressRange = self::pregReplace('/^(\\d+):(\\d+)$/', 'A${1}:XFD${2}', $addressRange);
 
             return empty($worksheet) ? strtoupper($addressRange) : $worksheet . '!' . strtoupper($addressRange);
@@ -1511,7 +1532,7 @@ class Worksheet implements IComparable
      */
     public function getStyle($cellCoordinate): Style
     {
-        $cellCoordinate = $this->validateCellRange($cellCoordinate);
+        $cellCoordinate = $this->validateCellOrCellRange($cellCoordinate);
 
         // set this sheet as active
         $this->parent->setActiveSheetIndex($this->parent->getIndex($this));
@@ -1988,7 +2009,7 @@ class Worksheet implements IComparable
      */
     public function protectCells($range, $password, $alreadyHashed = false)
     {
-        $range = Functions::trimSheetFromCellReference($this->validateCellRange($range));
+        $range = Functions::trimSheetFromCellReference($this->validateCellOrCellRange($range));
 
         if (!$alreadyHashed) {
             $password = Shared\PasswordHasher::hashPassword($password);
@@ -2036,7 +2057,7 @@ class Worksheet implements IComparable
      */
     public function unprotectCells($range)
     {
-        $range = Functions::trimSheetFromCellReference($this->validateCellRange($range));
+        $range = Functions::trimSheetFromCellReference($this->validateCellOrCellRange($range));
 
         if (isset($this->protectedCells[$range])) {
             unset($this->protectedCells[$range]);
@@ -2675,22 +2696,6 @@ class Worksheet implements IComparable
         return self::ensureString(preg_replace($pattern, $replacement, $subject));
     }
 
-    private function tryDefinedName(string $coordinate): string
-    {
-        // Uppercase coordinate
-        $coordinate = strtoupper($coordinate);
-        // Eliminate leading equal sign
-        $coordinate = self::pregReplace('/^=/', '', $coordinate);
-        $defined = $this->parent->getDefinedName($coordinate, $this);
-        if ($defined !== null) {
-            if ($defined->getWorksheet() === $this && !$defined->isFormula()) {
-                $coordinate = self::pregReplace('/^=/', '', $defined->getValue());
-            }
-        }
-
-        return $coordinate;
-    }
-
     /**
      * Select a range of cells.
      *
@@ -2700,23 +2705,8 @@ class Worksheet implements IComparable
      */
     public function setSelectedCells($coordinate)
     {
-        $originalCoordinate = $coordinate;
         $coordinate = $this->tryDefinedName($coordinate);
-
-        // Convert 'A' to 'A:A'
-        $coordinate = self::pregReplace('/^([A-Z]+)$/', '${1}:${1}', $coordinate);
-
-        // Convert '1' to '1:1'
-        $coordinate = self::pregReplace('/^(\d+)$/', '${1}:${1}', $coordinate);
-
-        // Convert 'A:C' to 'A1:C1048576'
-        $coordinate = self::pregReplace('/^([A-Z]+):([A-Z]+)$/', '${1}1:${2}1048576', $coordinate);
-
-        // Convert '1:3' to 'A1:XFD3'
-        $coordinate = self::pregReplace('/^(\d+):(\d+)$/', 'A${1}:XFD${2}', $coordinate);
-        if (preg_match('/^\\$?[A-Z]{1,3}\\$?\d{1,7}(:\\$?[A-Z]{1,3}\\$?\d{1,7})?$/', $coordinate) !== 1) {
-            throw new Exception("Invalid setSelectedCells $originalCoordinate $coordinate");
-        }
+        $coordinate = $this->validateCellOrCellRange($coordinate);
 
         if (Coordinate::coordinateIsRange($coordinate)) {
             [$first] = Coordinate::splitRange($coordinate);
